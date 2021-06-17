@@ -10,32 +10,37 @@ import (
 
 func TestMisc(t *testing.T) {
 	for _, tst := range []struct {
-		js   string
-		resp interface{}
+		js       string
+		wantResp interface{}
+		wantErr  error
 	}{
 		{
-			js:   "out(1);",
-			resp: 1.0,
+			js:       "out(1);",
+			wantResp: 1.0,
 		},
 		{
-			js:   "out(\"a\");",
-			resp: "a",
+			js:       "out(\"a\");",
+			wantResp: "a",
 		},
 		{
-			js:   "const a = 2.0; out(a);",
-			resp: 2.0,
+			js:       "const a = 2.0; out(a);",
+			wantResp: 2.0,
 		},
 		{
-			js:   "let a = 3.0; out(a);",
-			resp: 3.0,
+			js:       "let a = 3.0; out(a);",
+			wantResp: 3.0,
 		},
 		{
-			js:   "const f = (v) => { out(v); }; f(4.0);",
-			resp: 4.0,
+			js:       "const f = (v) => { out(v); }; f(4.0);",
+			wantResp: 4.0,
 		},
 		{
-			js:   "function f(v) { out(v); }; f(5.0);",
-			resp: 5.0,
+			js:       "function f(v) { out(v); }; f(5.0);",
+			wantResp: 5.0,
+		},
+		{
+			js:       "class A { do(v) { out(v); } }; const a = new A(); a.do(6.0);",
+			wantResp: 6.0,
 		},
 	} {
 		m := New()
@@ -46,13 +51,20 @@ func TestMisc(t *testing.T) {
 		}
 		ast, err := js.Parse(parse.NewInputString(tst.js))
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			continue
 		}
-		if err := m.NewRuntime().Run(ast); err != nil {
-			t.Fatal(err)
+		err = m.NewRuntime().Run(ast)
+		if err != nil && tst.wantErr == nil {
+			t.Errorf("%q produced %v", tst.js, err)
+			continue
 		}
-		if !reflect.DeepEqual(resp, tst.resp) {
-			t.Errorf("got %v, want %v", resp, tst.resp)
+		if (err == nil && tst.wantErr != nil) || (reflect.TypeOf(tst.wantErr) != reflect.TypeOf(err)) {
+			t.Errorf("%q produced %v, wanted %v", tst.js, err, tst.wantErr)
+			continue
+		}
+		if !reflect.DeepEqual(resp, tst.wantResp) {
+			t.Errorf("%q produced %v, want %v", tst.js, resp, tst.wantResp)
 		}
 	}
 }
