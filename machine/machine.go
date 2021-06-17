@@ -102,10 +102,91 @@ func (m *M) NewRuntime() *Runtime {
 	return r
 }
 
+func (r *Runtime) Lookup(name string) (interface{}, error) {
+	for scope := r.Scope; scope != nil; scope = scope.Parent {
+		if binding := scope.Get(name); binding != nil {
+			return binding.Item, nil
+		}
+	}
+	if item, found := r.Globals[name]; found {
+		return item, nil
+	}
+	if item, found := r.M.Globals[name]; found {
+		return item, nil
+	}
+	return nil, NotDeclaredError{
+		Message: fmt.Sprintf("%q is not declared", name),
+		Item:    name,
+	}
+}
+
 func (r *Runtime) Run(ast *js.AST) error {
 	evaluator := &Evaluator{Runtime: r}
 	_, err := evaluator.Eval(&ast.BlockStmt)
 	return err
+}
+
+func Call(callable interface{}, iArgs []interface{}) (interface{}, error) {
+	args := make([]reflect.Value, len(iArgs))
+	for idx := range args {
+		args[idx] = reflect.ValueOf(iArgs[idx])
+	}
+	refCallable := reflect.ValueOf(callable)
+	if refCallable.Kind() != reflect.Func {
+		return nil, NotCallableError{
+			Message: fmt.Sprintf("%#v is not callable", callable),
+			Item:    callable,
+		}
+	}
+	refType := reflect.TypeOf(callable)
+	if !refType.IsVariadic() && refType.NumIn() != len(args) {
+		return nil, WrongNumberOfArgsError{
+			Message: fmt.Sprintf("%#v takes %v args, got %v", callable, refType.NumIn(), len(args)),
+			Item:    callable,
+			Got:     len(args),
+			Want:    refType.NumIn(),
+		}
+	}
+	if refType.NumOut() != 2 {
+		return nil, NoReturnValueError{
+			Message: fmt.Sprintf("%#v doesn't return exactly two values", callable),
+			Item:    callable,
+		}
+	}
+	if refType.Out(0) != ifaceType {
+		return nil, WrongReturnValueError{
+			Message: fmt.Sprintf("%#v doesn't return an empty interface as first value", callable),
+			Item:    callable,
+			Got:     refType.Out(0),
+			Want:    ifaceType,
+		}
+	}
+	if refType.Out(1) != errorType {
+		return nil, WrongReturnValueError{
+			Message: fmt.Sprintf("%#v doesn't return an error as second value", callable),
+			Item:    callable,
+			Got:     refType.Out(1),
+			Want:    errorType,
+		}
+	}
+	var res interface{}
+	var err error
+	out := refCallable.Call(args)
+	if !out[0].IsNil() {
+		res = out[0].Interface()
+	}
+	if !out[1].IsNil() {
+		err = out[1].Interface().(error)
+	}
+	return res, err
+}
+
+func (r *Runtime) Call(funcName string, args ...interface{}) (interface{}, error) {
+	f, err := r.Lookup(funcName)
+	if err != nil {
+		return nil, err
+	}
+	return Call(f, args)
 }
 
 type Evaluator struct {
@@ -320,79 +401,18 @@ func (e *Evaluator) EvalCallExpr(expr *js.CallExpr) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	args := make([]reflect.Value, len(expr.Args.List))
+	args := make([]interface{}, len(expr.Args.List))
 	for idx := range args {
-		evaluated, err := e.Eval(expr.Args.List[idx].Value)
+		args[idx], err = e.Eval(expr.Args.List[idx].Value)
 		if err != nil {
 			return nil, err
 		}
-		args[idx] = reflect.ValueOf(evaluated)
 	}
-	refCallable := reflect.ValueOf(callable)
-	if refCallable.Kind() != reflect.Func {
-		return nil, NotCallableError{
-			Message: fmt.Sprintf("%#v is not callable", callable),
-			Item:    callable,
-		}
-	}
-	refType := reflect.TypeOf(callable)
-	if !refType.IsVariadic() && refType.NumIn() != len(args) {
-		return nil, WrongNumberOfArgsError{
-			Message: fmt.Sprintf("%#v takes %v args, got %v", callable, refType.NumIn(), len(args)),
-			Item:    callable,
-			Got:     len(args),
-			Want:    refType.NumIn(),
-		}
-	}
-	if refType.NumOut() != 2 {
-		return nil, NoReturnValueError{
-			Message: fmt.Sprintf("%#v doesn't return exactly two values", callable),
-			Item:    callable,
-		}
-	}
-	if refType.Out(0) != ifaceType {
-		return nil, WrongReturnValueError{
-			Message: fmt.Sprintf("%#v doesn't return an empty interface as first value", callable),
-			Item:    callable,
-			Got:     refType.Out(0),
-			Want:    ifaceType,
-		}
-	}
-	if refType.Out(1) != errorType {
-		return nil, WrongReturnValueError{
-			Message: fmt.Sprintf("%#v doesn't return an error as second value", callable),
-			Item:    callable,
-			Got:     refType.Out(1),
-			Want:    errorType,
-		}
-	}
-	var res interface{}
-	out := refCallable.Call(args)
-	if !out[0].IsNil() {
-		res = out[0].Interface()
-	}
-	if !out[1].IsNil() {
-		err = out[1].Interface().(error)
-	}
-	return res, err
+	return Call(callable, args)
 }
 
 func (e *Evaluator) EvalVar(v *js.Var) (interface{}, error) {
-	for scope := e.Runtime.Scope; scope != nil; scope = scope.Parent {
-		if binding := scope.Get(string(v.Data)); binding != nil {
-			return binding.Item, nil
-		}
-	}
-	if item, found := e.Runtime.Globals[string(v.Data)]; found {
-		return item, nil
-	}
-	if item, found := e.Runtime.M.Globals[string(v.Data)]; found {
-		return item, nil
-	}
-	return nil, NotDeclaredError{
-		Message: fmt.Sprintf("%#v is not declared", v),
-		Item:    v,
-	}
+	return e.Runtime.Lookup(string(v.Data))
 }
 
 func (e *Evaluator) ThrottleEvaluation(i interface{}) error {
