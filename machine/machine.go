@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/tdewolff/parse/v2/js"
+	"github.com/zond/gojuice/scope"
 )
 
 var (
@@ -71,41 +72,31 @@ func (n NoReturnValueError) Error() string {
 	return n.Message
 }
 
-type Binding struct {
-	Item     interface{}
-	Constant bool
-}
-
 type M struct {
 	Runtimes []*Runtime
-	Globals  map[string]*Binding
+	Globals  map[string]interface{}
 	Debug    bool
 }
 
 func New() *M {
 	return &M{
 		Runtimes: nil,
-		Globals:  map[string]*Binding{},
+		Globals:  map[string]interface{}{},
 	}
-}
-
-type Scope struct {
-	Parent   *Scope
-	Bindings map[string]*Binding
 }
 
 type Runtime struct {
 	M       *M
-	Globals map[string]*Binding
-	Scope   *Scope
+	Globals map[string]interface{}
+	Scope   *scope.S
 	Debug   bool
 }
 
 func (m *M) NewRuntime() *Runtime {
 	r := &Runtime{
 		M:       m,
-		Globals: map[string]*Binding{},
-		Scope:   &Scope{Bindings: map[string]*Binding{}},
+		Globals: map[string]interface{}{},
+		Scope:   scope.New(nil),
 	}
 	m.Runtimes = append(m.Runtimes, r)
 	return r
@@ -150,6 +141,8 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 		return e.EvalBinaryExpr(v)
 	case *js.ArrowFunc:
 		return e.EvalArrowFunc(v)
+	case *js.FuncDecl:
+		return nil, e.EvalFuncDecl(v)
 	}
 	return nil, NotImplementedError{
 		Message: fmt.Sprintf("evaluating %#v not yet implemented", i),
@@ -157,36 +150,49 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 	}
 }
 
-func (e *Evaluator) EvalArrowFunc(f *js.ArrowFunc) (interface{}, error) {
+func (e *Evaluator) EvalFuncDecl(f *js.FuncDecl) error {
+	genF, err := e.GenerateJSFunction(&f.Body, f.Params)
+	if err != nil {
+		return err
+	}
+	e.Runtime.Scope.Set(string(f.Name.Data), &scope.Binding{
+		Item:     genF,
+		Constant: true,
+	})
+	return nil
+}
+
+func (e *Evaluator) GenerateJSFunction(body *js.BlockStmt, expectedParams js.Params) (interface{}, error) {
 	parentScope := e.Runtime.Scope
-	return func(params ...interface{}) (interface{}, error) {
+	return func(actualParams ...interface{}) (interface{}, error) {
 		currentScope := e.Runtime.Scope
-		e.Runtime.Scope = &Scope{
-			Parent:   parentScope,
-			Bindings: map[string]*Binding{},
-		}
+		e.Runtime.Scope = scope.New(parentScope)
 		defer func() {
 			e.Runtime.Scope = currentScope
 		}()
-		if len(params) > len(f.Params.List) {
+		if len(actualParams) > len(expectedParams.List) {
 			return nil, WrongNumberOfArgsError{
-				Message: fmt.Sprintf("%#v takes %v args, got %v", f, len(f.Params.List), len(params)),
-				Item:    f,
-				Got:     len(params),
-				Want:    len(f.Params.List),
+				Message: fmt.Sprintf("%#v takes %v args, got %v", body, len(expectedParams.List), len(actualParams)),
+				Item:    body,
+				Got:     len(actualParams),
+				Want:    len(expectedParams.List),
 			}
 		}
-		for idx, el := range f.Params.List {
+		for idx, el := range expectedParams.List {
 			var value interface{}
-			if idx < len(params) {
-				value = params[idx]
+			if idx < len(actualParams) {
+				value = actualParams[idx]
 			}
 			if err := e.EvalBindingElement(el, value, false); err != nil {
 				return nil, err
 			}
 		}
-		return e.Eval(&f.Body)
+		return e.Eval(body)
 	}, nil
+}
+
+func (e *Evaluator) EvalArrowFunc(f *js.ArrowFunc) (interface{}, error) {
+	return e.GenerateJSFunction(&f.Body, f.Params)
 }
 
 func (e *Evaluator) EvalEqEqComparison(x, y interface{}) bool {
@@ -300,6 +306,8 @@ func (e *Evaluator) EvalLiteralExpr(expr *js.LiteralExpr) (interface{}, error) {
 	switch expr.TokenType {
 	case js.DecimalToken:
 		return strconv.ParseFloat(string(expr.Data), 64)
+	case js.StringToken:
+		return string(expr.Data[1 : len(expr.Data)-1]), nil
 	}
 	return nil, NotImplementedError{
 		Message: fmt.Sprintf("evaluating literal %#v not yet implemented", expr),
@@ -371,15 +379,15 @@ func (e *Evaluator) EvalCallExpr(expr *js.CallExpr) (interface{}, error) {
 
 func (e *Evaluator) EvalVar(v *js.Var) (interface{}, error) {
 	for scope := e.Runtime.Scope; scope != nil; scope = scope.Parent {
-		if binding, found := scope.Bindings[string(v.Data)]; found {
+		if binding := scope.Get(string(v.Data)); binding != nil {
 			return binding.Item, nil
 		}
 	}
-	if binding, found := e.Runtime.Globals[string(v.Data)]; found {
-		return binding.Item, nil
+	if item, found := e.Runtime.Globals[string(v.Data)]; found {
+		return item, nil
 	}
-	if binding, found := e.Runtime.M.Globals[string(v.Data)]; found {
-		return binding.Item, nil
+	if item, found := e.Runtime.M.Globals[string(v.Data)]; found {
+		return item, nil
 	}
 	return nil, NotDeclaredError{
 		Message: fmt.Sprintf("%#v is not declared", v),
@@ -408,10 +416,10 @@ func (e *Evaluator) EvalBindingElement(el js.BindingElement, value interface{}, 
 	}
 	switch bind := el.Binding.(type) {
 	case *js.Var:
-		e.Runtime.Scope.Bindings[string(bind.Data)] = &Binding{
+		e.Runtime.Scope.Set(string(bind.Data), &scope.Binding{
 			Item:     value,
 			Constant: constant,
-		}
+		})
 		return nil
 	}
 	return NotImplementedError{
@@ -430,10 +438,7 @@ func (e *Evaluator) EvalVarDecl(varDecl *js.VarDecl) error {
 }
 
 func (e *Evaluator) EvalBlockStmt(stmt *js.BlockStmt) error {
-	e.Runtime.Scope = &Scope{
-		Parent:   e.Runtime.Scope,
-		Bindings: map[string]*Binding{},
-	}
+	e.Runtime.Scope = scope.New(e.Runtime.Scope)
 	defer func() {
 		e.Runtime.Scope = e.Runtime.Scope.Parent
 	}()

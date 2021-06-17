@@ -19,12 +19,9 @@ func main() {
 	}
 	m := machine.New()
 	m.Debug = *debug
-	m.Globals["log"] = &machine.Binding{
-		Item: func(params ...interface{}) (interface{}, error) {
-			fmt.Println(params...)
-			return nil, nil
-		},
-		Constant: true,
+	m.Globals["log"] = func(params ...interface{}) (interface{}, error) {
+		fmt.Println(params...)
+		return nil, nil
 	}
 	r := m.NewRuntime()
 	if err := r.Run(ast); err != nil {
