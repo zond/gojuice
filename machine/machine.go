@@ -13,7 +13,28 @@ var (
 	ifaceType = reflect.TypeOf((*interface{})(nil)).Elem()
 	errorType = reflect.TypeOf((*error)(nil)).Elem()
 	objType   = reflect.TypeOf(map[string]interface{}{})
+	aryType   = reflect.TypeOf([]interface{}{})
 )
+
+type IndexOutOfBoundsError struct {
+	Message string
+	Item    interface{}
+	Index   interface{}
+}
+
+func (i IndexOutOfBoundsError) Error() string {
+	return i.Message
+}
+
+type NonIntegerIndexError struct {
+	Message string
+	Item    interface{}
+	Index   interface{}
+}
+
+func (n NonIntegerIndexError) Error() string {
+	return n.Message
+}
 
 type NotObjectError struct {
 	Message string
@@ -246,10 +267,52 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 		return e.EvalDotExpr(v)
 	case *js.ForInStmt:
 		return nil, e.EvalForInStmt(v)
+	case *js.IndexExpr:
+		return e.EvalIndexExpr(v)
 	}
 	return nil, NotImplementedError{
 		Message: fmt.Sprintf("evaluating %#v not yet implemented", i),
 		Item:    i,
+	}
+}
+
+func (e *Evaluator) EvalIndexExpr(expr *js.IndexExpr) (interface{}, error) {
+	x, err := e.Eval(expr.X)
+	if err != nil {
+		return nil, err
+	}
+	y, err := e.Eval(expr.Y)
+	if err != nil {
+		return nil, err
+	}
+	refX := reflect.ValueOf(x)
+	if refX.Type() == objType {
+		return refX.MapIndex(reflect.ValueOf(fmt.Sprint(y))).Interface(), nil
+	} else if refX.Type() == aryType {
+		refY := reflect.ValueOf(y)
+		if refY.Kind() != reflect.Int {
+			return nil, NonIntegerIndexError{
+				Message: fmt.Sprintf("can only index arrays using integers, not %#v", y),
+				Item:    x,
+				Index:   y,
+			}
+		}
+		idx := int(refY.Int())
+		if idx < 0 {
+			idx = idx % refX.Len()
+		}
+		if idx+1 > refX.Len() {
+			return nil, IndexOutOfBoundsError{
+				Message: fmt.Sprintf("can only index within length %v of array, not %v", refX.Len(), idx),
+				Item:    x,
+				Index:   y,
+			}
+		}
+		return refX.Index(idx).Interface(), nil
+	}
+	return nil, NotImplementedError{
+		Message: fmt.Sprintf("index expression %#v not yet implemented", expr),
+		Item:    expr,
 	}
 }
 
@@ -471,6 +534,46 @@ func (e *Evaluator) EvalAssignment(expr *js.BinaryExpr) (interface{}, error) {
 		}
 		refObj.SetMapIndex(reflect.ValueOf(string(v.Y.Data)), reflect.ValueOf(y))
 		return y, nil
+	case *js.IndexExpr:
+		val, err := e.Eval(v.X)
+		if err != nil {
+			return nil, err
+		}
+		idx, err := e.Eval(v.Y)
+		if err != nil {
+			return nil, err
+		}
+		refVal := reflect.ValueOf(val)
+		if refVal.Type() == objType {
+			refVal.SetMapIndex(reflect.ValueOf(fmt.Sprint(idx)), reflect.ValueOf(y))
+			return y, nil
+		} else if refVal.Type() == aryType {
+			refIdx := reflect.ValueOf(idx)
+			if refIdx.Kind() != reflect.Int {
+				return nil, NonIntegerIndexError{
+					Message: fmt.Sprintf("can only index arrays using integers, not %#v", idx),
+					Item:    val,
+					Index:   idx,
+				}
+			}
+			idx := int(refIdx.Int())
+			if idx < 0 {
+				idx = idx % refVal.Len()
+			}
+			if idx+1 > refVal.Len() {
+				return nil, IndexOutOfBoundsError{
+					Message: fmt.Sprintf("can only index within length %v of array, not %v", refVal.Len(), idx),
+					Item:    val,
+					Index:   idx,
+				}
+			}
+			refVal.Index(idx).Set(reflect.ValueOf(y))
+			return y, nil
+		}
+		return nil, NotImplementedError{
+			Message: fmt.Sprintf("index expression %#v not yet implemented", expr),
+			Item:    expr,
+		}
 	}
 	return nil, NotImplementedError{
 		Message: fmt.Sprintf("assignment to %#v not yet implemented", expr.X),

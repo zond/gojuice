@@ -94,7 +94,15 @@ func TestMisc(t *testing.T) {
 		},
 		{
 			js:       "const a = [0,2,4]; out(a[1]);",
-			wantResp: 1,
+			wantResp: 2,
+		},
+		{
+			js:       "const a = [0,2,4]; a[1] = 6; out(a[1]);",
+			wantResp: 6,
+		},
+		{
+			js:       "const a = {\"x\": \"y\"}; a[\"x\"] = \"z\"; out(a[\"x\"]);",
+			wantResp: "z",
 		},
 	} {
 		m := New()
@@ -123,12 +131,12 @@ func TestMisc(t *testing.T) {
 					t.Errorf("%q produced %v, expected a single value", tst.js, resp)
 				}
 				if !reflect.DeepEqual(resp[0], tst.wantResp) {
-					t.Errorf("%q produced %v, want %v", tst.js, resp[0], tst.wantResp)
+					t.Errorf("%q produced %#v, want singe value %#v", tst.js, resp[0], tst.wantResp)
 				}
 			}
 			if tst.wantManyResp != nil {
 				if !reflect.DeepEqual(resp, tst.wantManyResp) {
-					t.Errorf("%q produced %v, want %v", tst.js, resp, tst.wantManyResp)
+					t.Errorf("%q produced %#v, want multi values %#v", tst.js, resp, tst.wantManyResp)
 				}
 			}
 		}
