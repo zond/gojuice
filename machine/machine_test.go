@@ -1,11 +1,13 @@
 package machine
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/tdewolff/parse/v2"
 	"github.com/tdewolff/parse/v2/js"
+	"github.com/zond/gojuice/scope"
 )
 
 func TestMisc(t *testing.T) {
@@ -74,11 +76,24 @@ func TestMisc(t *testing.T) {
 			js:       "let a = 1.0; a = 2.0; out(a);",
 			wantResp: 2.0,
 		},
+		{
+			js:      "const a = 1.0; a = 2.0; out(a);",
+			wantErr: scope.MutatingConstantError{},
+		},
+		{
+			js:      "const a = 1.0; a.b = 2.0;",
+			wantErr: NotObjectError{},
+		},
+		{
+			js:       "const a = {\"1\": 2, \"3\": 4}; for (const k in a) { out(k); }",
+			wantResp: []interface{}{"1", "3"},
+		},
 	} {
 		m := New()
-		var resp interface{}
+		resp := []interface{}{}
 		m.Globals["out"] = func(i interface{}) (interface{}, error) {
-			resp = i
+			fmt.Printf("out got %#v\n", i)
+			resp = append(resp, i)
 			return nil, nil
 		}
 		ast, err := js.Parse(parse.NewInputString(tst.js))
@@ -95,8 +110,20 @@ func TestMisc(t *testing.T) {
 			t.Errorf("%q produced %v, wanted %v", tst.js, err, tst.wantErr)
 			continue
 		}
-		if !reflect.DeepEqual(resp, tst.wantResp) {
-			t.Errorf("%q produced %v, want %v", tst.js, resp, tst.wantResp)
+		if err == nil {
+			switch tst.wantResp.(type) {
+			case []interface{}:
+				if !reflect.DeepEqual(resp, tst.wantResp) {
+					t.Errorf("%q produced %v, want %v", tst.js, resp, tst.wantResp)
+				}
+			default:
+				if len(resp) != 1 {
+					t.Errorf("%q produced %v, expected a single value", tst.js, resp)
+				}
+				if !reflect.DeepEqual(resp[0], tst.wantResp) {
+					t.Errorf("%q produced %v, want %v", tst.js, resp[0], tst.wantResp)
+				}
+			}
 		}
 	}
 }

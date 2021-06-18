@@ -238,10 +238,56 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 		return e.EvalObjectExpr(v)
 	case *js.DotExpr:
 		return e.EvalDotExpr(v)
+	case *js.ForInStmt:
+		return nil, e.EvalForInStmt(v)
 	}
 	return nil, NotImplementedError{
 		Message: fmt.Sprintf("evaluating %#v not yet implemented", i),
 		Item:    i,
+	}
+}
+
+func (e *Evaluator) EvalForInStmt(stmt *js.ForInStmt) error {
+	obj, err := e.Eval(stmt.Value)
+	if err != nil {
+		return err
+	}
+	refObj := reflect.ValueOf(obj)
+	if refObj.Type() != objType {
+		return NotObjectError{
+			Message: fmt.Sprintf("%#v is not an object", obj),
+			Item:    obj,
+		}
+	}
+	switch init := stmt.Init.(type) {
+	case *js.VarDecl:
+		refKeys := refObj.MapKeys()
+		for _, refKey := range refKeys {
+			if len(init.List) != 1 {
+				return NotImplementedError{
+					Message: fmt.Sprintf("for in statement with init %#v not implemented", init),
+					Item:    init,
+				}
+			}
+			e.Runtime.Scope = scope.New(e.Runtime.Scope)
+			if err := func() error {
+				defer func() {
+					e.Runtime.Scope = e.Runtime.Scope.Parent
+				}()
+				if err := e.EvalBindingElement(init.List[0], refKey.Interface(), init.TokenType == js.ConstToken); err != nil {
+					return err
+				}
+				_, err := e.Eval(stmt.Body)
+				return err
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return NotImplementedError{
+		Message: fmt.Sprintf("for statmement %#v not yet implemented", stmt),
+		Item:    stmt,
 	}
 }
 
