@@ -104,6 +104,10 @@ func TestMisc(t *testing.T) {
 			js:       "const a = {\"x\": \"y\"}; a[\"x\"] = \"z\"; out(a[\"x\"]);",
 			wantResp: "z",
 		},
+		{
+			js:           "let a = [3,2,1]; for (let e in a) { out(e); }",
+			wantManyResp: []interface{}{3, 2, 1},
+		},
 	} {
 		m := New()
 		resp := []interface{}{}

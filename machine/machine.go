@@ -329,45 +329,56 @@ func (e *Evaluator) EvalArrayExpr(expr *js.ArrayExpr) (interface{}, error) {
 }
 
 func (e *Evaluator) EvalForInStmt(stmt *js.ForInStmt) error {
-	obj, err := e.Eval(stmt.Value)
+	val, err := e.Eval(stmt.Value)
 	if err != nil {
 		return err
 	}
-	refObj := reflect.ValueOf(obj)
-	if refObj.Type() != objType {
-		return NotObjectError{
-			Message: fmt.Sprintf("%#v is not an object", obj),
-			Item:    obj,
-		}
-	}
 	switch init := stmt.Init.(type) {
 	case *js.VarDecl:
-		refKeys := refObj.MapKeys()
-		for _, refKey := range refKeys {
-			if len(init.List) != 1 {
-				return NotImplementedError{
-					Message: fmt.Sprintf("for in statement with init %#v not implemented", init),
-					Item:    init,
-				}
+		if len(init.List) != 1 {
+			return NotImplementedError{
+				Message: fmt.Sprintf("for in statement with init %#v not implemented", init),
+				Item:    init,
 			}
+		}
+		iterator := func(el interface{}) error {
 			e.Runtime.Scope = scope.New(e.Runtime.Scope)
-			if err := func() error {
+			return func() error {
 				defer func() {
 					e.Runtime.Scope = e.Runtime.Scope.Parent
 				}()
-				if err := e.EvalBindingElement(init.List[0], refKey.Interface(), init.TokenType == js.ConstToken); err != nil {
+				if err := e.EvalBindingElement(init.List[0], el, init.TokenType == js.ConstToken); err != nil {
 					return err
 				}
 				_, err := e.Eval(stmt.Body)
 				return err
-			}(); err != nil {
-				return err
-			}
+			}()
 		}
-		return nil
+		refVal := reflect.ValueOf(val)
+		if refVal.Type() == objType {
+			refKeys := refVal.MapKeys()
+			for _, refKey := range refKeys {
+				if err := iterator(refKey.Interface()); err != nil {
+					return err
+				}
+			}
+			return nil
+		} else if refVal.Type() == aryType {
+			for i := 0; i < refVal.Len(); i++ {
+				if err := iterator(refVal.Index(i).Interface()); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		return NotImplementedError{
+			Message: fmt.Sprintf("for in statement with init %#v not implemented", init),
+			Item:    init,
+		}
+
 	}
 	return NotImplementedError{
-		Message: fmt.Sprintf("for statmement %#v not yet implemented", stmt),
+		Message: fmt.Sprintf("init clause of for statmement %#v not yet implemented", stmt),
 		Item:    stmt,
 	}
 }
