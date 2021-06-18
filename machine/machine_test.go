@@ -92,6 +92,10 @@ func TestMisc(t *testing.T) {
 			js:       "out([1,2,3]);",
 			wantResp: []interface{}{1, 2, 3},
 		},
+		{
+			js:       "const a = [0,2,4]; out(a[1]);",
+			wantResp: 1,
+		},
 	} {
 		m := New()
 		resp := []interface{}{}
