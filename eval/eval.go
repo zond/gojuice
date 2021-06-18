@@ -19,7 +19,7 @@ func main() {
 	}
 	m := machine.New()
 	m.Debug = *debug
-	m.Globals["log"] = func(params ...interface{}) (interface{}, error) {
+	m.Globals["out"] = func(params ...interface{}) (interface{}, error) {
 		fmt.Println(params...)
 		return nil, nil
 	}

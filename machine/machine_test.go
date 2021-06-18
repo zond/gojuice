@@ -16,6 +16,10 @@ func TestMisc(t *testing.T) {
 	}{
 		{
 			js:       "out(1);",
+			wantResp: 1,
+		},
+		{
+			js:       "out(1.0);",
 			wantResp: 1.0,
 		},
 		{
@@ -39,8 +43,36 @@ func TestMisc(t *testing.T) {
 			wantResp: 5.0,
 		},
 		{
-			js:       "class A { do(v) { out(v); } }; const a = new A(); a.do(6.0);",
-			wantResp: 6.0,
+			js:       "out({});",
+			wantResp: map[string]interface{}{},
+		},
+		{
+			js:       "out({\"1\": 2});",
+			wantResp: map[string]interface{}{"1": 2},
+		},
+		{
+			js:       "out({1: 2});",
+			wantResp: map[string]interface{}{"1": 2},
+		},
+		{
+			js:       "out({1: 2.0});",
+			wantResp: map[string]interface{}{"1": 2.0},
+		},
+		{
+			js:       "out({\"x\": \"y\"});",
+			wantResp: map[string]interface{}{"x": "y"},
+		},
+		{
+			js:       "const a = {\"b\": 2.0}; out(a.b);",
+			wantResp: 2.0,
+		},
+		{
+			js:       "const a = {\"b\": 2.0}; a.c = 3.0; out(a.c);",
+			wantResp: 3.0,
+		},
+		{
+			js:       "let a = 1.0; a = 2.0; out(a);",
+			wantResp: 2.0,
 		},
 	} {
 		m := New()

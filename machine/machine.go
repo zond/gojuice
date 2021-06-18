@@ -12,7 +12,17 @@ import (
 var (
 	ifaceType = reflect.TypeOf((*interface{})(nil)).Elem()
 	errorType = reflect.TypeOf((*error)(nil)).Elem()
+	objType   = reflect.TypeOf(map[string]interface{}{})
 )
+
+type NotObjectError struct {
+	Message string
+	Item    interface{}
+}
+
+func (n NotObjectError) Error() string {
+	return n.Message
+}
 
 type NotDeclaredError struct {
 	Message string
@@ -224,11 +234,54 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 		return e.EvalArrowFunc(v)
 	case *js.FuncDecl:
 		return nil, e.EvalFuncDecl(v)
+	case *js.ObjectExpr:
+		return e.EvalObjectExpr(v)
+	case *js.DotExpr:
+		return e.EvalDotExpr(v)
 	}
 	return nil, NotImplementedError{
 		Message: fmt.Sprintf("evaluating %#v not yet implemented", i),
 		Item:    i,
 	}
+}
+
+func (e *Evaluator) EvalDotExpr(expr *js.DotExpr) (interface{}, error) {
+	x, err := e.Eval(expr.X)
+	if err != nil {
+		return nil, err
+	}
+	refX := reflect.ValueOf(x)
+	if refX.Type() != objType {
+		return nil, NotObjectError{
+			Message: fmt.Sprintf("%#v is not an object", x),
+			Item:    x,
+		}
+	}
+	refVal := refX.MapIndex(reflect.ValueOf(string(expr.Y.Data)))
+	if !refVal.IsValid() {
+		return nil, nil
+	}
+	return refVal.Interface(), nil
+}
+
+func (e *Evaluator) EvalObjectExpr(expr *js.ObjectExpr) (interface{}, error) {
+	res := map[string]interface{}{}
+	for _, prop := range expr.List {
+		name := string(prop.Name.Literal.Data)
+		if prop.Name.Computed != nil {
+			iName, err := e.Eval(prop.Name.Computed)
+			if err != nil {
+				return nil, err
+			}
+			name = fmt.Sprint(iName)
+		}
+		value, err := e.Eval(prop.Value)
+		if err != nil {
+			return nil, err
+		}
+		res[name] = value
+	}
+	return res, nil
 }
 
 func (e *Evaluator) EvalFuncDecl(f *js.FuncDecl) error {
@@ -276,26 +329,42 @@ func (e *Evaluator) EvalArrowFunc(f *js.ArrowFunc) (interface{}, error) {
 	return e.GenerateJSFunction(&f.Body, f.Params)
 }
 
-func (e *Evaluator) EvalEqEqComparison(x, y interface{}) bool {
-	return fmt.Sprint(x) == fmt.Sprint(y)
+func (e *Evaluator) EvalEqEqComparison(expr *js.BinaryExpr) (bool, error) {
+	x, err := e.Eval(expr.X)
+	if err != nil {
+		return false, err
+	}
+	y, err := e.Eval(expr.Y)
+	if err != nil {
+		return false, err
+	}
+	return fmt.Sprint(x) == fmt.Sprint(y), nil
 }
 
-func (e *Evaluator) EvalEqEqEqComparison(x, y interface{}) bool {
+func (e *Evaluator) EvalEqEqEqComparison(expr *js.BinaryExpr) (bool, error) {
+	x, err := e.Eval(expr.X)
+	if err != nil {
+		return false, err
+	}
+	y, err := e.Eval(expr.Y)
+	if err != nil {
+		return false, err
+	}
 	refX := reflect.ValueOf(x)
 	refY := reflect.ValueOf(y)
 	if refX.Kind() != refY.Kind() {
-		return false
+		return false, nil
 	}
 	if refX.Type() != refY.Type() {
-		return false
+		return false, nil
 	}
 	switch refX.Kind() {
 	case reflect.Bool:
-		return refX.Bool() == refY.Bool()
+		return refX.Bool() == refY.Bool(), nil
 	case reflect.Int:
-		return refX.Int() == refY.Int()
+		return refX.Int() == refY.Int(), nil
 	case reflect.Float64:
-		return refX.Float() == refY.Float()
+		return refX.Float() == refY.Float(), nil
 	case reflect.Ptr:
 		fallthrough
 	case reflect.Func:
@@ -305,31 +374,54 @@ func (e *Evaluator) EvalEqEqEqComparison(x, y interface{}) bool {
 	case reflect.Map:
 		fallthrough
 	case reflect.Slice:
-		return refX.Pointer() == refY.Pointer()
+		return refX.Pointer() == refY.Pointer(), nil
 	}
-	return reflect.DeepEqual(x, y)
+	return reflect.DeepEqual(x, y), nil
 }
 
-func (e *Evaluator) EvalAssignment(x, y interface{}) (interface{}, error) {
-	return nil, nil
-}
-
-func (e *Evaluator) EvalBinaryExpr(expr *js.BinaryExpr) (interface{}, error) {
-	x, err := e.Eval(expr.X)
-	if err != nil {
-		return nil, err
-	}
+func (e *Evaluator) EvalAssignment(expr *js.BinaryExpr) (interface{}, error) {
 	y, err := e.Eval(expr.Y)
 	if err != nil {
 		return nil, err
 	}
+	switch v := expr.X.(type) {
+	case *js.Var:
+		if err := e.Runtime.Scope.Set(string(v.Data), &scope.Binding{
+			Item:     y,
+			Constant: false,
+		}); err != nil {
+			return nil, err
+		}
+		return y, nil
+	case *js.DotExpr:
+		obj, err := e.Eval(v.X)
+		if err != nil {
+			return nil, err
+		}
+		refObj := reflect.ValueOf(obj)
+		if refObj.Type() != objType {
+			return nil, NotObjectError{
+				Message: fmt.Sprintf("%#v is not an object", obj),
+				Item:    obj,
+			}
+		}
+		refObj.SetMapIndex(reflect.ValueOf(string(v.Y.Data)), reflect.ValueOf(y))
+		return y, nil
+	}
+	return nil, NotImplementedError{
+		Message: fmt.Sprintf("assignment to %#v not yet implemented", expr.X),
+		Item:    expr.X,
+	}
+}
+
+func (e *Evaluator) EvalBinaryExpr(expr *js.BinaryExpr) (interface{}, error) {
 	switch expr.Op {
 	case js.EqToken:
-		return e.EvalAssignment(x, y)
+		return e.EvalAssignment(expr)
 	case js.EqEqToken:
-		return e.EvalEqEqComparison(x, y), nil
+		return e.EvalEqEqComparison(expr)
 	case js.EqEqEqToken:
-		return e.EvalEqEqEqComparison(x, y), nil
+		return e.EvalEqEqEqComparison(expr)
 	}
 	return nil, NotImplementedError{
 		Message: fmt.Sprintf("evaluating binary expression %#v not yet implemented", expr),
@@ -386,7 +478,11 @@ func (e *Evaluator) EvalIfStmt(stmt *js.IfStmt) error {
 func (e *Evaluator) EvalLiteralExpr(expr *js.LiteralExpr) (interface{}, error) {
 	switch expr.TokenType {
 	case js.DecimalToken:
-		return strconv.ParseFloat(string(expr.Data), 64)
+		intVal, err := strconv.Atoi(string(expr.Data))
+		if err != nil {
+			return strconv.ParseFloat(string(expr.Data), 64)
+		}
+		return intVal, nil
 	case js.StringToken:
 		return string(expr.Data[1 : len(expr.Data)-1]), nil
 	}
