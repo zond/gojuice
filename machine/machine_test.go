@@ -1,7 +1,6 @@
 package machine
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 
@@ -12,9 +11,10 @@ import (
 
 func TestMisc(t *testing.T) {
 	for _, tst := range []struct {
-		js       string
-		wantResp interface{}
-		wantErr  error
+		js           string
+		wantResp     interface{}
+		wantManyResp []interface{}
+		wantErr      error
 	}{
 		{
 			js:       "out(1);",
@@ -85,14 +85,17 @@ func TestMisc(t *testing.T) {
 			wantErr: NotObjectError{},
 		},
 		{
-			js:       "const a = {\"1\": 2, \"3\": 4}; for (const k in a) { out(k); }",
-			wantResp: []interface{}{"1", "3"},
+			js:           "const a = {\"1\": 2, \"3\": 4}; for (const k in a) { out(k); }",
+			wantManyResp: []interface{}{"1", "3"},
+		},
+		{
+			js:       "out([1,2,3]);",
+			wantResp: []interface{}{1, 2, 3},
 		},
 	} {
 		m := New()
 		resp := []interface{}{}
 		m.Globals["out"] = func(i interface{}) (interface{}, error) {
-			fmt.Printf("out got %#v\n", i)
 			resp = append(resp, i)
 			return nil, nil
 		}
@@ -111,17 +114,17 @@ func TestMisc(t *testing.T) {
 			continue
 		}
 		if err == nil {
-			switch tst.wantResp.(type) {
-			case []interface{}:
-				if !reflect.DeepEqual(resp, tst.wantResp) {
-					t.Errorf("%q produced %v, want %v", tst.js, resp, tst.wantResp)
-				}
-			default:
+			if tst.wantResp != nil {
 				if len(resp) != 1 {
 					t.Errorf("%q produced %v, expected a single value", tst.js, resp)
 				}
 				if !reflect.DeepEqual(resp[0], tst.wantResp) {
 					t.Errorf("%q produced %v, want %v", tst.js, resp[0], tst.wantResp)
+				}
+			}
+			if tst.wantManyResp != nil {
+				if !reflect.DeepEqual(resp, tst.wantManyResp) {
+					t.Errorf("%q produced %v, want %v", tst.js, resp, tst.wantManyResp)
 				}
 			}
 		}

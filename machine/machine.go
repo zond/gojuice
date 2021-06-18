@@ -139,7 +139,11 @@ func (r *Runtime) Run(ast *js.AST) error {
 func Call(callable interface{}, iArgs []interface{}) (interface{}, error) {
 	args := make([]reflect.Value, len(iArgs))
 	for idx := range args {
-		args[idx] = reflect.ValueOf(iArgs[idx])
+		if iArgs[idx] == nil {
+			args[idx] = reflect.New(ifaceType).Elem()
+		} else {
+			args[idx] = reflect.ValueOf(iArgs[idx])
+		}
 	}
 	refCallable := reflect.ValueOf(callable)
 	if refCallable.Kind() != reflect.Func {
@@ -236,6 +240,8 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 		return nil, e.EvalFuncDecl(v)
 	case *js.ObjectExpr:
 		return e.EvalObjectExpr(v)
+	case *js.ArrayExpr:
+		return e.EvalArrayExpr(v)
 	case *js.DotExpr:
 		return e.EvalDotExpr(v)
 	case *js.ForInStmt:
@@ -245,6 +251,18 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 		Message: fmt.Sprintf("evaluating %#v not yet implemented", i),
 		Item:    i,
 	}
+}
+
+func (e *Evaluator) EvalArrayExpr(expr *js.ArrayExpr) (interface{}, error) {
+	res := make([]interface{}, 0, len(expr.List))
+	for _, el := range expr.List {
+		v, err := e.Eval(el.Value)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, v)
+	}
+	return res, nil
 }
 
 func (e *Evaluator) EvalForInStmt(stmt *js.ForInStmt) error {
