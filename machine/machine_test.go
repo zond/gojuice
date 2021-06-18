@@ -165,6 +165,10 @@ func TestMisc(t *testing.T) {
 			js:       "let a = [1,2,3]; out(a.reduce((el, sum) => { return sum + el; }, 0));",
 			wantResp: 6,
 		},
+		{
+			js:       "class A { constructor(v) { this.v = v; } do() { out(this.v); } }; const a = new A(4); a.do();",
+			wantResp: 4,
+		},
 	} {
 		m := New()
 		resp := []interface{}{}

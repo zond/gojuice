@@ -14,6 +14,15 @@ var (
 	errorType = reflect.TypeOf((*error)(nil)).Elem()
 )
 
+type NotClassError struct {
+	Message string
+	Item    interface{}
+}
+
+func (n NotClassError) Error() string {
+	return n.Message
+}
+
 type NotPairError struct {
 	Message string
 	Item    interface{}
@@ -297,11 +306,107 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 		return nil, e.EvalForInStmt(v)
 	case *js.IndexExpr:
 		return e.EvalIndexExpr(v)
+	case *js.ClassDecl:
+		return nil, e.EvalClassDecl(v)
+	case *js.NewExpr:
+		return e.EvalNewExpr(v)
 	}
 	return nil, NotImplementedError{
 		Message: fmt.Sprintf("evaluating %#v not yet implemented", i),
 		Item:    i,
 	}
+}
+
+func (e *Evaluator) EvalNewExpr(expr *js.NewExpr) (interface{}, error) {
+	iClass, err := e.Eval(expr.X)
+	if err != nil {
+		return nil, err
+	}
+	switch class := iClass.(type) {
+	case *JSClass:
+		res := map[string]interface{}{}
+		for k, v := range class.Fields {
+			res[k] = v
+		}
+		generateThisFunc := func(body *js.BlockStmt, params js.Params) (func(...interface{}) (interface{}, error), error) {
+			return e.GenerateJSFunction(body, params, map[string]*scope.Binding{
+				"this": &scope.Binding{
+					Item:     res,
+					Constant: true,
+				},
+			})
+		}
+		constructor, found := class.Methods["constructor"]
+		if found {
+			constructorF, err := generateThisFunc(&constructor.Body, constructor.Params)
+			if err != nil {
+				return nil, err
+			}
+			args := make([]interface{}, len(expr.Args.List))
+			for idx := range args {
+				args[idx], err = e.Eval(expr.Args.List[idx].Value)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if _, err = Call(constructorF, args); err != nil {
+				return nil, err
+			}
+		}
+		for name, method := range class.Methods {
+			methodF, err := generateThisFunc(&method.Body, method.Params)
+			if err != nil {
+				return nil, err
+			}
+			res[name] = methodF
+		}
+		return res, nil
+	}
+	return nil, NotClassError{
+		Message: fmt.Sprintf("%#v is not a class", iClass),
+		Item:    iClass,
+	}
+}
+
+type JSClass struct {
+	Fields  map[string]interface{}
+	Methods map[string]*js.MethodDecl
+}
+
+func (e *Evaluator) EvalClassDecl(decl *js.ClassDecl) error {
+	class := &JSClass{
+		Fields:  map[string]interface{}{},
+		Methods: map[string]*js.MethodDecl{},
+	}
+	for _, field := range decl.Definitions {
+		name := string(field.Name.Literal.Data)
+		if field.Name.Computed != nil {
+			iName, err := e.Eval(field.Name.Computed)
+			if err != nil {
+				return err
+			}
+			name = fmt.Sprint(iName)
+		}
+		val, err := e.Eval(field.Init)
+		if err != nil {
+			return err
+		}
+		class.Fields[name] = val
+	}
+	for _, method := range decl.Methods {
+		name := string(method.Name.Literal.Data)
+		if method.Name.Computed != nil {
+			iName, err := e.Eval(method.Name.Computed)
+			if err != nil {
+				return err
+			}
+			name = fmt.Sprint(iName)
+		}
+		class.Methods[name] = method
+	}
+	return e.Runtime.Scope.Set(string(decl.Name.Data), &scope.Binding{
+		Item: class,
+	})
 }
 
 func (e *Evaluator) EvalReturnStmt(stmt *js.ReturnStmt) (interface{}, error) {
@@ -569,7 +674,7 @@ func (e *Evaluator) EvalObjectExpr(expr *js.ObjectExpr) (interface{}, error) {
 }
 
 func (e *Evaluator) EvalFuncDecl(f *js.FuncDecl) error {
-	genF, err := e.GenerateJSFunction(&f.Body, f.Params)
+	genF, err := e.GenerateJSFunction(&f.Body, f.Params, nil)
 	if err != nil {
 		return err
 	}
@@ -580,7 +685,7 @@ func (e *Evaluator) EvalFuncDecl(f *js.FuncDecl) error {
 	return nil
 }
 
-func (e *Evaluator) GenerateJSFunction(body *js.BlockStmt, expectedParams js.Params) (interface{}, error) {
+func (e *Evaluator) GenerateJSFunction(body *js.BlockStmt, expectedParams js.Params, extraScope map[string]*scope.Binding) (func(...interface{}) (interface{}, error), error) {
 	parentScope := e.Runtime.Scope
 	return func(actualParams ...interface{}) (interface{}, error) {
 		currentScope := e.Runtime.Scope
@@ -588,6 +693,11 @@ func (e *Evaluator) GenerateJSFunction(body *js.BlockStmt, expectedParams js.Par
 		defer func() {
 			e.Runtime.Scope = currentScope
 		}()
+		if extraScope != nil {
+			for k, v := range extraScope {
+				e.Runtime.Scope.Set(k, v)
+			}
+		}
 		if len(actualParams) > len(expectedParams.List) {
 			return nil, WrongNumberOfArgsError{
 				Message: fmt.Sprintf("%#v takes %v args, got %v", body, len(expectedParams.List), len(actualParams)),
@@ -610,7 +720,7 @@ func (e *Evaluator) GenerateJSFunction(body *js.BlockStmt, expectedParams js.Par
 }
 
 func (e *Evaluator) EvalArrowFunc(f *js.ArrowFunc) (interface{}, error) {
-	return e.GenerateJSFunction(&f.Body, f.Params)
+	return e.GenerateJSFunction(&f.Body, f.Params, nil)
 }
 
 func EqEqComparison(x, y interface{}) (bool, error) {
@@ -941,9 +1051,11 @@ func (e *Evaluator) EvalLiteralExpr(expr *js.LiteralExpr) (interface{}, error) {
 		return intVal, nil
 	case js.StringToken:
 		return string(expr.Data[1 : len(expr.Data)-1]), nil
+	case js.ThisToken:
+		return e.Runtime.Lookup("this")
 	}
 	return nil, NotImplementedError{
-		Message: fmt.Sprintf("evaluating literal %#v not yet implemented", expr),
+		Message: fmt.Sprintf("evaluating literal %#v (%v) not yet implemented", expr, expr.TokenType),
 		Item:    expr,
 	}
 }
