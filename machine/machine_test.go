@@ -85,8 +85,11 @@ func TestMisc(t *testing.T) {
 			wantErr: NotObjectError{},
 		},
 		{
-			js:           "const a = {\"1\": 2, \"3\": 4}; for (const k in a) { out(k); }",
-			wantManyResp: []interface{}{"1", "3"},
+			js: "const a = {\"1\": 2, \"3\": 4}; const b = {}; for (const k in a) { b[k] = a[k]; }; out(b);",
+			wantResp: map[string]interface{}{
+				"1": 2,
+				"3": 4,
+			},
 		},
 		{
 			js:       "out([1,2,3]);",
@@ -107,6 +110,60 @@ func TestMisc(t *testing.T) {
 		{
 			js:           "let a = [3,2,1]; for (let e in a) { out(e); }",
 			wantManyResp: []interface{}{3, 2, 1},
+		},
+		{
+			js: "const a = {\"x\": 1, \"y\": 2}; const b = {}; a.forEach((k, v) => { b[k] = v; }); out(b);",
+			wantResp: map[string]interface{}{
+				"x": 1,
+				"y": 2,
+			},
+		},
+		{
+			js: "const a = {\"x\": 1, \"y\": 2}; out(a.map((k, v) => { return [v, k]; }));",
+			wantResp: map[string]interface{}{
+				"1": "x",
+				"2": "y",
+			},
+		},
+		{
+			js:       "out(1 + 2);",
+			wantResp: 3,
+		},
+		{
+			js:       "out(1.0 + 2);",
+			wantResp: 3.0,
+		},
+		{
+			js:       "out(1 + 2.0);",
+			wantResp: 3.0,
+		},
+		{
+			js:       "out(1.0 + 2.0);",
+			wantResp: 3.0,
+		},
+		{
+			js:       "out(\"1 \" + 2.1);",
+			wantResp: "1 2.1",
+		},
+		{
+			js:       "out([1,2] + [3,4]);",
+			wantResp: []interface{}{1, 2, 3, 4},
+		},
+		{
+			js:       "const a = {\"x\": 1, \"y\": 2}; out(a.reduce((k, v, sum) => { return sum + v; }, 0));",
+			wantResp: 3,
+		},
+		{
+			js:       "out([1,2,3].map((v) => { return v * 2; }));",
+			wantResp: []interface{}{2, 4, 6},
+		},
+		{
+			js:           "let a = [1,2,3]; a.forEach((el) => { out(el); });",
+			wantManyResp: []interface{}{1, 2, 3},
+		},
+		{
+			js:       "let a = [1,2,3]; out(a.reduce((el, sum) => { return sum + el; }, 0));",
+			wantResp: 6,
 		},
 	} {
 		m := New()
@@ -135,7 +192,7 @@ func TestMisc(t *testing.T) {
 					t.Errorf("%q produced %v, expected a single value", tst.js, resp)
 				}
 				if !reflect.DeepEqual(resp[0], tst.wantResp) {
-					t.Errorf("%q produced %#v, want singe value %#v", tst.js, resp[0], tst.wantResp)
+					t.Errorf("%q produced %#v, want single value %#v", tst.js, resp[0], tst.wantResp)
 				}
 			}
 			if tst.wantManyResp != nil {

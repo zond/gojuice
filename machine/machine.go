@@ -12,9 +12,25 @@ import (
 var (
 	ifaceType = reflect.TypeOf((*interface{})(nil)).Elem()
 	errorType = reflect.TypeOf((*error)(nil)).Elem()
-	objType   = reflect.TypeOf(map[string]interface{}{})
-	aryType   = reflect.TypeOf([]interface{}{})
 )
+
+type NotPairError struct {
+	Message string
+	Item    interface{}
+}
+
+func (n NotPairError) Error() string {
+	return n.Message
+}
+
+type NotFunctionError struct {
+	Message string
+	Item    interface{}
+}
+
+func (n NotFunctionError) Error() string {
+	return n.Message
+}
 
 type IndexOutOfBoundsError struct {
 	Message string
@@ -52,6 +68,16 @@ type NotDeclaredError struct {
 
 func (n NotDeclaredError) Error() string {
 	return n.Message
+}
+
+type BinaryOpNotImplementedError struct {
+	Message string
+	X       interface{}
+	Y       interface{}
+}
+
+func (b BinaryOpNotImplementedError) Error() string {
+	return b.Message
 }
 
 type NotImplementedError struct {
@@ -241,8 +267,10 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 	switch v := i.(type) {
 	case *js.IfStmt:
 		return nil, e.EvalIfStmt(v)
+	case *js.ReturnStmt:
+		return e.EvalReturnStmt(v)
 	case *js.BlockStmt:
-		return nil, e.EvalBlockStmt(v)
+		return e.EvalBlockStmt(v)
 	case *js.ExprStmt:
 		return e.Eval(v.Value)
 	case *js.VarDecl:
@@ -276,6 +304,10 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 	}
 }
 
+func (e *Evaluator) EvalReturnStmt(stmt *js.ReturnStmt) (interface{}, error) {
+	return e.Eval(stmt.Value)
+}
+
 func (e *Evaluator) EvalIndexExpr(expr *js.IndexExpr) (interface{}, error) {
 	x, err := e.Eval(expr.X)
 	if err != nil {
@@ -285,33 +317,33 @@ func (e *Evaluator) EvalIndexExpr(expr *js.IndexExpr) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	refX := reflect.ValueOf(x)
-	if refX.Type() == objType {
-		return refX.MapIndex(reflect.ValueOf(fmt.Sprint(y))).Interface(), nil
-	} else if refX.Type() == aryType {
-		refY := reflect.ValueOf(y)
-		if refY.Kind() != reflect.Int {
+	switch v := x.(type) {
+	case map[string]interface{}:
+		return v[fmt.Sprint(y)], nil
+	case []interface{}:
+		switch idx := y.(type) {
+		case int:
+			if idx < 0 {
+				idx = idx % len(v)
+			}
+			if idx > len(v) {
+				return nil, IndexOutOfBoundsError{
+					Message: fmt.Sprintf("can only index within length %v of array, not %v", len(v), idx),
+					Item:    v,
+					Index:   idx,
+				}
+			}
+			return v[idx], nil
+		default:
 			return nil, NonIntegerIndexError{
 				Message: fmt.Sprintf("can only index arrays using integers, not %#v", y),
-				Item:    x,
+				Item:    v,
 				Index:   y,
 			}
 		}
-		idx := int(refY.Int())
-		if idx < 0 {
-			idx = idx % refX.Len()
-		}
-		if idx+1 > refX.Len() {
-			return nil, IndexOutOfBoundsError{
-				Message: fmt.Sprintf("can only index within length %v of array, not %v", refX.Len(), idx),
-				Item:    x,
-				Index:   y,
-			}
-		}
-		return refX.Index(idx).Interface(), nil
 	}
 	return nil, NotImplementedError{
-		Message: fmt.Sprintf("index expression %#v not yet implemented", expr),
+		Message: fmt.Sprintf("index expression %#v on %#v not yet implemented", expr, x),
 		Item:    expr,
 	}
 }
@@ -354,28 +386,27 @@ func (e *Evaluator) EvalForInStmt(stmt *js.ForInStmt) error {
 				return err
 			}()
 		}
-		refVal := reflect.ValueOf(val)
-		if refVal.Type() == objType {
-			refKeys := refVal.MapKeys()
-			for _, refKey := range refKeys {
-				if err := iterator(refKey.Interface()); err != nil {
+		switch v := val.(type) {
+		case map[string]interface{}:
+			for k := range v {
+				if err := iterator(k); err != nil {
 					return err
 				}
 			}
 			return nil
-		} else if refVal.Type() == aryType {
-			for i := 0; i < refVal.Len(); i++ {
-				if err := iterator(refVal.Index(i).Interface()); err != nil {
+		case []interface{}:
+			for _, el := range v {
+				if err := iterator(el); err != nil {
 					return err
 				}
 			}
 			return nil
+		default:
+			return NotImplementedError{
+				Message: fmt.Sprintf("for in statement with on %#v not implemented", val),
+				Item:    init,
+			}
 		}
-		return NotImplementedError{
-			Message: fmt.Sprintf("for in statement with init %#v not implemented", init),
-			Item:    init,
-		}
-
 	}
 	return NotImplementedError{
 		Message: fmt.Sprintf("init clause of for statmement %#v not yet implemented", stmt),
@@ -383,23 +414,138 @@ func (e *Evaluator) EvalForInStmt(stmt *js.ForInStmt) error {
 	}
 }
 
+func (e *Evaluator) AssertJSFunc(i interface{}) (func(...interface{}) (interface{}, error), error) {
+	f, ok := i.(func(...interface{}) (interface{}, error))
+	if !ok {
+		return nil, NotFunctionError{
+			Message: fmt.Sprintf("%#v isn't a JS function", i),
+			Item:    i,
+		}
+	}
+	return f, nil
+}
+
 func (e *Evaluator) EvalDotExpr(expr *js.DotExpr) (interface{}, error) {
 	x, err := e.Eval(expr.X)
 	if err != nil {
 		return nil, err
 	}
-	refX := reflect.ValueOf(x)
-	if refX.Type() != objType {
-		return nil, NotObjectError{
-			Message: fmt.Sprintf("%#v is not an object", x),
-			Item:    x,
+	switch v := x.(type) {
+	case map[string]interface{}:
+		switch string(expr.Y.Data) {
+		case "reduce":
+			return func(iIterator, sum interface{}) (interface{}, error) {
+				iterator, err := e.AssertJSFunc(iIterator)
+				if err != nil {
+					return nil, err
+				}
+				for key, val := range v {
+					sum, err = iterator(key, val, sum)
+					if err != nil {
+						return nil, err
+					}
+				}
+				return sum, nil
+			}, nil
+		case "map":
+			return func(iIterator interface{}) (interface{}, error) {
+				iterator, err := e.AssertJSFunc(iIterator)
+				if err != nil {
+					return nil, err
+				}
+				res := map[string]interface{}{}
+				for key, val := range v {
+					mapped, err := iterator(key, val)
+					if err != nil {
+						return nil, err
+					}
+					switch ary := mapped.(type) {
+					case []interface{}:
+						if len(ary) != 2 {
+							return nil, NotPairError{
+								Message: fmt.Sprintf("%#v isn't a pair of two values", mapped),
+								Item:    mapped,
+							}
+						}
+						res[fmt.Sprint(ary[0])] = ary[1]
+					default:
+						return nil, NotPairError{
+							Message: fmt.Sprintf("%#v isn't a pair of two values", mapped),
+							Item:    mapped,
+						}
+					}
+				}
+				return res, nil
+			}, nil
+		case "forEach":
+			return func(iIterator interface{}) (interface{}, error) {
+				iterator, err := e.AssertJSFunc(iIterator)
+				if err != nil {
+					return nil, err
+				}
+				for key, val := range v {
+					_, err := iterator(key, val)
+					if err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			}, nil
+		default:
+			return v[string(expr.Y.Data)], nil
+		}
+	case []interface{}:
+		switch string(expr.Y.Data) {
+		case "reduce":
+			return func(iIterator, sum interface{}) (interface{}, error) {
+				iterator, err := e.AssertJSFunc(iIterator)
+				if err != nil {
+					return nil, err
+				}
+				for _, el := range v {
+					sum, err = iterator(el, sum)
+					if err != nil {
+						return nil, err
+					}
+				}
+				return sum, nil
+			}, nil
+		case "map":
+			return func(iIterator interface{}) (interface{}, error) {
+				iterator, err := e.AssertJSFunc(iIterator)
+				if err != nil {
+					return nil, err
+				}
+				res := make([]interface{}, 0, len(v))
+				for _, el := range v {
+					mapped, err := iterator(el)
+					if err != nil {
+						return nil, err
+					}
+					res = append(res, mapped)
+				}
+				return res, nil
+			}, nil
+		case "forEach":
+			return func(iIterator interface{}) (interface{}, error) {
+				iterator, err := e.AssertJSFunc(iIterator)
+				if err != nil {
+					return nil, err
+				}
+				for _, el := range v {
+					_, err := iterator(el)
+					if err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			}, nil
 		}
 	}
-	refVal := refX.MapIndex(reflect.ValueOf(string(expr.Y.Data)))
-	if !refVal.IsValid() {
-		return nil, nil
+	return nil, NotObjectError{
+		Message: fmt.Sprintf("%#v is not an object", x),
+		Item:    x,
 	}
-	return refVal.Interface(), nil
 }
 
 func (e *Evaluator) EvalObjectExpr(expr *js.ObjectExpr) (interface{}, error) {
@@ -467,27 +613,11 @@ func (e *Evaluator) EvalArrowFunc(f *js.ArrowFunc) (interface{}, error) {
 	return e.GenerateJSFunction(&f.Body, f.Params)
 }
 
-func (e *Evaluator) EvalEqEqComparison(expr *js.BinaryExpr) (bool, error) {
-	x, err := e.Eval(expr.X)
-	if err != nil {
-		return false, err
-	}
-	y, err := e.Eval(expr.Y)
-	if err != nil {
-		return false, err
-	}
+func EqEqComparison(x, y interface{}) (bool, error) {
 	return fmt.Sprint(x) == fmt.Sprint(y), nil
 }
 
-func (e *Evaluator) EvalEqEqEqComparison(expr *js.BinaryExpr) (bool, error) {
-	x, err := e.Eval(expr.X)
-	if err != nil {
-		return false, err
-	}
-	y, err := e.Eval(expr.Y)
-	if err != nil {
-		return false, err
-	}
+func EqEqEqComparison(x, y interface{}) (bool, error) {
 	refX := reflect.ValueOf(x)
 	refY := reflect.ValueOf(y)
 	if refX.Kind() != refY.Kind() {
@@ -536,17 +666,18 @@ func (e *Evaluator) EvalAssignment(expr *js.BinaryExpr) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		refObj := reflect.ValueOf(obj)
-		if refObj.Type() != objType {
+		switch hmap := obj.(type) {
+		case map[string]interface{}:
+			hmap[string(v.Y.Data)] = y
+			return y, nil
+		default:
 			return nil, NotObjectError{
 				Message: fmt.Sprintf("%#v is not an object", obj),
 				Item:    obj,
 			}
 		}
-		refObj.SetMapIndex(reflect.ValueOf(string(v.Y.Data)), reflect.ValueOf(y))
-		return y, nil
 	case *js.IndexExpr:
-		val, err := e.Eval(v.X)
+		obj, err := e.Eval(v.X)
 		if err != nil {
 			return nil, err
 		}
@@ -554,36 +685,37 @@ func (e *Evaluator) EvalAssignment(expr *js.BinaryExpr) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		refVal := reflect.ValueOf(val)
-		if refVal.Type() == objType {
-			refVal.SetMapIndex(reflect.ValueOf(fmt.Sprint(idx)), reflect.ValueOf(y))
+		switch ass := obj.(type) {
+		case map[string]interface{}:
+			ass[fmt.Sprint(idx)] = y
 			return y, nil
-		} else if refVal.Type() == aryType {
-			refIdx := reflect.ValueOf(idx)
-			if refIdx.Kind() != reflect.Int {
+		case []interface{}:
+			switch i := idx.(type) {
+			case int:
+				if i < 0 {
+					i = i % len(ass)
+				}
+				if i+1 > len(ass) {
+					return nil, IndexOutOfBoundsError{
+						Message: fmt.Sprintf("can only index within length %v of array, not %v", len(ass), i),
+						Item:    ass,
+						Index:   i,
+					}
+				}
+				ass[i] = y
+				return y, nil
+			default:
 				return nil, NonIntegerIndexError{
 					Message: fmt.Sprintf("can only index arrays using integers, not %#v", idx),
-					Item:    val,
+					Item:    ass,
 					Index:   idx,
 				}
 			}
-			idx := int(refIdx.Int())
-			if idx < 0 {
-				idx = idx % refVal.Len()
+		default:
+			return nil, NotObjectError{
+				Message: fmt.Sprintf("#%v is not an object or an array", obj),
+				Item:    obj,
 			}
-			if idx+1 > refVal.Len() {
-				return nil, IndexOutOfBoundsError{
-					Message: fmt.Sprintf("can only index within length %v of array, not %v", refVal.Len(), idx),
-					Item:    val,
-					Index:   idx,
-				}
-			}
-			refVal.Index(idx).Set(reflect.ValueOf(y))
-			return y, nil
-		}
-		return nil, NotImplementedError{
-			Message: fmt.Sprintf("index expression %#v not yet implemented", expr),
-			Item:    expr,
 		}
 	}
 	return nil, NotImplementedError{
@@ -592,14 +724,160 @@ func (e *Evaluator) EvalAssignment(expr *js.BinaryExpr) (interface{}, error) {
 	}
 }
 
+func Add(x, y interface{}) (interface{}, error) {
+	switch xv := x.(type) {
+	case int:
+		switch yv := y.(type) {
+		case int:
+			return xv + yv, nil
+		case float64:
+			return float64(xv) + yv, nil
+		}
+	case float64:
+		switch yv := y.(type) {
+		case int:
+			return xv + float64(yv), nil
+		case float64:
+			return xv + yv, nil
+		}
+	case string:
+		switch yv := y.(type) {
+		case int:
+			return xv + fmt.Sprint(yv), nil
+		case float64:
+			return xv + fmt.Sprint(yv), nil
+		case string:
+			return xv + fmt.Sprint(yv), nil
+		}
+	case []interface{}:
+		switch yv := y.(type) {
+		case []interface{}:
+			res := make([]interface{}, len(xv)+len(yv))
+			copy(res, xv)
+			copy(res[len(xv):], yv)
+			return res, nil
+		}
+	}
+	return nil, BinaryOpNotImplementedError{
+		Message: fmt.Sprintf("add of %#v and %#v not implemented", x, y),
+		X:       x,
+		Y:       y,
+	}
+}
+
+func Div(x, y interface{}) (interface{}, error) {
+	switch xv := x.(type) {
+	case int:
+		switch yv := y.(type) {
+		case int:
+			return xv / yv, nil
+		case float64:
+			return float64(xv) / yv, nil
+		}
+	case float64:
+		switch yv := y.(type) {
+		case int:
+			return xv / float64(yv), nil
+		case float64:
+			return xv / yv, nil
+		}
+	}
+	return nil, BinaryOpNotImplementedError{
+		Message: fmt.Sprintf("div of %#v and %#v not implemented", x, y),
+		X:       x,
+		Y:       y,
+	}
+}
+
+func Sub(x, y interface{}) (interface{}, error) {
+	switch xv := x.(type) {
+	case int:
+		switch yv := y.(type) {
+		case int:
+			return xv - yv, nil
+		case float64:
+			return float64(xv) - yv, nil
+		}
+	case float64:
+		switch yv := y.(type) {
+		case int:
+			return xv - float64(yv), nil
+		case float64:
+			return xv - yv, nil
+		}
+	}
+	return nil, BinaryOpNotImplementedError{
+		Message: fmt.Sprintf("sub of %#v and %#v not implemented", x, y),
+		X:       x,
+		Y:       y,
+	}
+}
+
+func Mul(x, y interface{}) (interface{}, error) {
+	switch xv := x.(type) {
+	case int:
+		switch yv := y.(type) {
+		case int:
+			return xv * yv, nil
+		case float64:
+			return float64(xv) * yv, nil
+		}
+	case float64:
+		switch yv := y.(type) {
+		case int:
+			return xv * float64(yv), nil
+		case float64:
+			return xv * yv, nil
+		}
+	case string:
+		switch yv := y.(type) {
+		case int:
+			res := ""
+			for i := 0; i < yv; i++ {
+				res += xv
+			}
+			return res, nil
+		}
+	case []interface{}:
+		switch yv := y.(type) {
+		case int:
+			res := make([]interface{}, len(xv)*yv)
+			for i := 0; i < yv; i++ {
+				copy(res[i*len(xv):], xv)
+			}
+			return res, nil
+		}
+	}
+	return nil, BinaryOpNotImplementedError{
+		Message: fmt.Sprintf("mul of %#v and %#v not implemented", x, y),
+		X:       x,
+		Y:       y,
+	}
+}
+
 func (e *Evaluator) EvalBinaryExpr(expr *js.BinaryExpr) (interface{}, error) {
-	switch expr.Op {
-	case js.EqToken:
+	if expr.Op == js.EqToken {
 		return e.EvalAssignment(expr)
+	}
+	x, err := e.Eval(expr.X)
+	if err != nil {
+		return nil, err
+	}
+	y, err := e.Eval(expr.Y)
+	if err != nil {
+		return nil, err
+	}
+	switch expr.Op {
 	case js.EqEqToken:
-		return e.EvalEqEqComparison(expr)
+		return EqEqComparison(x, y)
 	case js.EqEqEqToken:
-		return e.EvalEqEqEqComparison(expr)
+		return EqEqEqComparison(x, y)
+	case js.AddToken:
+		return Add(x, y)
+	case js.SubToken:
+		return Sub(x, y)
+	case js.MulToken:
+		return Mul(x, y)
 	}
 	return nil, NotImplementedError{
 		Message: fmt.Sprintf("evaluating binary expression %#v not yet implemented", expr),
@@ -731,15 +1009,17 @@ func (e *Evaluator) EvalVarDecl(varDecl *js.VarDecl) error {
 	return nil
 }
 
-func (e *Evaluator) EvalBlockStmt(stmt *js.BlockStmt) error {
+func (e *Evaluator) EvalBlockStmt(stmt *js.BlockStmt) (interface{}, error) {
 	e.Runtime.Scope = scope.New(e.Runtime.Scope)
 	defer func() {
 		e.Runtime.Scope = e.Runtime.Scope.Parent
 	}()
+	var res interface{}
+	var err error
 	for _, i := range stmt.List {
-		if _, err := e.Eval(i); err != nil {
-			return err
+		if res, err = e.Eval(i); err != nil {
+			return nil, err
 		}
 	}
-	return nil
+	return res, nil
 }
