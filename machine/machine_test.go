@@ -9,6 +9,31 @@ import (
 	"github.com/zond/gojuice/scope"
 )
 
+func TestRoundtrip(t *testing.T) {
+	m := New()
+	resp := []interface{}{}
+	m.Globals["out"] = func(i interface{}) (interface{}, error) {
+		resp = append(resp, i)
+		return nil, nil
+	}
+	ast, err := js.Parse(parse.NewInputString("function do_out(x) { out(x); }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := m.NewRuntime()
+	if err = r.Run(ast); err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Call("do_out", "ttt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []interface{}{"ttt"}
+	if !reflect.DeepEqual(resp, want) {
+		t.Errorf("got %+v, wanted %+v", resp, want)
+	}
+}
+
 func TestMisc(t *testing.T) {
 	for _, tst := range []struct {
 		js           string

@@ -188,7 +188,7 @@ func (r *Runtime) Lookup(name string) (interface{}, error) {
 
 func (r *Runtime) Run(ast *js.AST) error {
 	evaluator := &Evaluator{Runtime: r}
-	_, err := evaluator.Eval(&ast.BlockStmt)
+	_, err := evaluator.EvalBlockStmt(&ast.BlockStmt, false)
 	return err
 }
 
@@ -279,7 +279,7 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 	case *js.ReturnStmt:
 		return e.EvalReturnStmt(v)
 	case *js.BlockStmt:
-		return e.EvalBlockStmt(v)
+		return e.EvalBlockStmt(v, true)
 	case *js.ExprStmt:
 		return e.Eval(v.Value)
 	case *js.VarDecl:
@@ -1121,11 +1121,13 @@ func (e *Evaluator) EvalVarDecl(varDecl *js.VarDecl) error {
 	return nil
 }
 
-func (e *Evaluator) EvalBlockStmt(stmt *js.BlockStmt) (interface{}, error) {
-	e.Runtime.Scope = scope.New(e.Runtime.Scope)
-	defer func() {
-		e.Runtime.Scope = e.Runtime.Scope.Parent
-	}()
+func (e *Evaluator) EvalBlockStmt(stmt *js.BlockStmt, newScope bool) (interface{}, error) {
+	if newScope {
+		e.Runtime.Scope = scope.New(e.Runtime.Scope)
+		defer func() {
+			e.Runtime.Scope = e.Runtime.Scope.Parent
+		}()
+	}
 	var res interface{}
 	var err error
 	for _, i := range stmt.List {
