@@ -194,6 +194,10 @@ func TestMisc(t *testing.T) {
 			js:       "class A { constructor(v) { this.v = v; } do() { out(this.v); } }; const a = new A(4); a.do();",
 			wantResp: 4,
 		},
+		{
+			js:       "function a(x) { if (x) { return 1; } else { return 2; } }; out(a(true));",
+			wantResp: 1,
+		},
 	} {
 		m := New()
 		resp := []interface{}{}

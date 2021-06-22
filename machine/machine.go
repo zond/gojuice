@@ -275,7 +275,7 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 	}
 	switch v := i.(type) {
 	case *js.IfStmt:
-		return nil, e.EvalIfStmt(v)
+		return e.EvalIfStmt(v)
 	case *js.ReturnStmt:
 		return e.EvalReturnStmt(v)
 	case *js.BlockStmt:
@@ -283,7 +283,7 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 	case *js.ExprStmt:
 		return e.Eval(v.Value)
 	case *js.VarDecl:
-		return nil, e.EvalVarDecl(v)
+		return e.EvalVarDecl(v)
 	case *js.LiteralExpr:
 		return e.EvalLiteralExpr(v)
 	case *js.CallExpr:
@@ -295,7 +295,7 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 	case *js.ArrowFunc:
 		return e.EvalArrowFunc(v)
 	case *js.FuncDecl:
-		return nil, e.EvalFuncDecl(v)
+		return e.EvalFuncDecl(v)
 	case *js.ObjectExpr:
 		return e.EvalObjectExpr(v)
 	case *js.ArrayExpr:
@@ -303,11 +303,11 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 	case *js.DotExpr:
 		return e.EvalDotExpr(v)
 	case *js.ForInStmt:
-		return nil, e.EvalForInStmt(v)
+		return e.EvalForInStmt(v)
 	case *js.IndexExpr:
 		return e.EvalIndexExpr(v)
 	case *js.ClassDecl:
-		return nil, e.EvalClassDecl(v)
+		return e.EvalClassDecl(v)
 	case *js.NewExpr:
 		return e.EvalNewExpr(v)
 	}
@@ -373,7 +373,7 @@ type JSClass struct {
 	Methods map[string]*js.MethodDecl
 }
 
-func (e *Evaluator) EvalClassDecl(decl *js.ClassDecl) error {
+func (e *Evaluator) EvalClassDecl(decl *js.ClassDecl) (interface{}, error) {
 	class := &JSClass{
 		Fields:  map[string]interface{}{},
 		Methods: map[string]*js.MethodDecl{},
@@ -383,13 +383,13 @@ func (e *Evaluator) EvalClassDecl(decl *js.ClassDecl) error {
 		if field.Name.Computed != nil {
 			iName, err := e.Eval(field.Name.Computed)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			name = fmt.Sprint(iName)
 		}
 		val, err := e.Eval(field.Init)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		class.Fields[name] = val
 	}
@@ -398,13 +398,13 @@ func (e *Evaluator) EvalClassDecl(decl *js.ClassDecl) error {
 		if method.Name.Computed != nil {
 			iName, err := e.Eval(method.Name.Computed)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			name = fmt.Sprint(iName)
 		}
 		class.Methods[name] = method
 	}
-	return e.Runtime.Scope.Set(string(decl.Name.Data), &scope.Binding{
+	return class, e.Runtime.Scope.Set(string(decl.Name.Data), &scope.Binding{
 		Item: class,
 	})
 }
@@ -465,15 +465,15 @@ func (e *Evaluator) EvalArrayExpr(expr *js.ArrayExpr) (interface{}, error) {
 	return res, nil
 }
 
-func (e *Evaluator) EvalForInStmt(stmt *js.ForInStmt) error {
+func (e *Evaluator) EvalForInStmt(stmt *js.ForInStmt) (interface{}, error) {
 	val, err := e.Eval(stmt.Value)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	switch init := stmt.Init.(type) {
 	case *js.VarDecl:
 		if len(init.List) != 1 {
-			return NotImplementedError{
+			return nil, NotImplementedError{
 				Message: fmt.Sprintf("for in statement with init %#v not implemented", init),
 				Item:    init,
 			}
@@ -484,7 +484,7 @@ func (e *Evaluator) EvalForInStmt(stmt *js.ForInStmt) error {
 				defer func() {
 					e.Runtime.Scope = e.Runtime.Scope.Parent
 				}()
-				if err := e.EvalBindingElement(init.List[0], el, init.TokenType == js.ConstToken); err != nil {
+				if _, err := e.EvalBindingElement(init.List[0], el, init.TokenType == js.ConstToken); err != nil {
 					return err
 				}
 				_, err := e.Eval(stmt.Body)
@@ -495,25 +495,25 @@ func (e *Evaluator) EvalForInStmt(stmt *js.ForInStmt) error {
 		case map[string]interface{}:
 			for k := range v {
 				if err := iterator(k); err != nil {
-					return err
+					return nil, err
 				}
 			}
-			return nil
+			return v, nil
 		case []interface{}:
 			for _, el := range v {
 				if err := iterator(el); err != nil {
-					return err
+					return nil, err
 				}
 			}
-			return nil
+			return v, nil
 		default:
-			return NotImplementedError{
+			return nil, NotImplementedError{
 				Message: fmt.Sprintf("for in statement with on %#v not implemented", val),
 				Item:    init,
 			}
 		}
 	}
-	return NotImplementedError{
+	return nil, NotImplementedError{
 		Message: fmt.Sprintf("init clause of for statmement %#v not yet implemented", stmt),
 		Item:    stmt,
 	}
@@ -673,16 +673,16 @@ func (e *Evaluator) EvalObjectExpr(expr *js.ObjectExpr) (interface{}, error) {
 	return res, nil
 }
 
-func (e *Evaluator) EvalFuncDecl(f *js.FuncDecl) error {
+func (e *Evaluator) EvalFuncDecl(f *js.FuncDecl) (interface{}, error) {
 	genF, err := e.GenerateJSFunction(&f.Body, f.Params, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	e.Runtime.Scope.Set(string(f.Name.Data), &scope.Binding{
 		Item:     genF,
 		Constant: true,
 	})
-	return nil
+	return genF, nil
 }
 
 func (e *Evaluator) GenerateJSFunction(body *js.BlockStmt, expectedParams js.Params, extraScope map[string]*scope.Binding) (func(...interface{}) (interface{}, error), error) {
@@ -711,7 +711,7 @@ func (e *Evaluator) GenerateJSFunction(body *js.BlockStmt, expectedParams js.Par
 			if idx < len(actualParams) {
 				value = actualParams[idx]
 			}
-			if err := e.EvalBindingElement(el, value, false); err != nil {
+			if _, err := e.EvalBindingElement(el, value, false); err != nil {
 				return nil, err
 			}
 		}
@@ -1028,17 +1028,16 @@ func (e *Evaluator) EvalTruth(iVal interface{}) bool {
 	return true
 }
 
-func (e *Evaluator) EvalIfStmt(stmt *js.IfStmt) error {
+func (e *Evaluator) EvalIfStmt(stmt *js.IfStmt) (interface{}, error) {
 	cond, err := e.Eval(stmt.Cond)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if e.EvalTruth(cond) {
-		_, err = e.Eval(stmt.Body)
+		return e.Eval(stmt.Body)
 	} else {
-		_, err = e.Eval(stmt.Else)
+		return e.Eval(stmt.Else)
 	}
-	return err
 }
 
 func (e *Evaluator) EvalLiteralExpr(expr *js.LiteralExpr) (interface{}, error) {
@@ -1053,6 +1052,10 @@ func (e *Evaluator) EvalLiteralExpr(expr *js.LiteralExpr) (interface{}, error) {
 		return string(expr.Data[1 : len(expr.Data)-1]), nil
 	case js.ThisToken:
 		return e.Runtime.Lookup("this")
+	case js.TrueToken:
+		return true, nil
+	case js.FalseToken:
+		return false, nil
 	}
 	return nil, NotImplementedError{
 		Message: fmt.Sprintf("evaluating literal %#v (%v) not yet implemented", expr, expr.TokenType),
@@ -1087,16 +1090,16 @@ func (e *Evaluator) ThrottleAllocation(i interface{}) error {
 	return nil
 }
 
-func (e *Evaluator) EvalBindingElement(el js.BindingElement, value interface{}, constant bool) error {
+func (e *Evaluator) EvalBindingElement(el js.BindingElement, value interface{}, constant bool) (interface{}, error) {
 	if value == nil {
 		var err error
 		value, err = e.Eval(el.Default)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := e.ThrottleAllocation(value); err != nil {
-		return err
+		return nil, err
 	}
 	switch bind := el.Binding.(type) {
 	case *js.Var:
@@ -1104,21 +1107,23 @@ func (e *Evaluator) EvalBindingElement(el js.BindingElement, value interface{}, 
 			Item:     value,
 			Constant: constant,
 		})
-		return nil
+		return value, nil
 	}
-	return NotImplementedError{
+	return nil, NotImplementedError{
 		Message: fmt.Sprintf("evaluating binding element %#v not yet implemented", el),
 		Item:    el,
 	}
 }
 
-func (e *Evaluator) EvalVarDecl(varDecl *js.VarDecl) error {
+func (e *Evaluator) EvalVarDecl(varDecl *js.VarDecl) (interface{}, error) {
+	var res interface{}
+	var err error
 	for _, el := range varDecl.List {
-		if err := e.EvalBindingElement(el, nil, varDecl.TokenType == js.ConstToken); err != nil {
-			return err
+		if res, err = e.EvalBindingElement(el, nil, varDecl.TokenType == js.ConstToken); err != nil {
+			return nil, err
 		}
 	}
-	return nil
+	return res, nil
 }
 
 func (e *Evaluator) EvalBlockStmt(stmt *js.BlockStmt, newScope bool) (interface{}, error) {
@@ -1133,6 +1138,10 @@ func (e *Evaluator) EvalBlockStmt(stmt *js.BlockStmt, newScope bool) (interface{
 	for _, i := range stmt.List {
 		if res, err = e.Eval(i); err != nil {
 			return nil, err
+		}
+		switch i.(type) {
+		case *js.ReturnStmt:
+			return res, nil
 		}
 	}
 	return res, nil
