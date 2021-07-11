@@ -151,11 +151,38 @@ func New() *M {
 	}
 }
 
+type Throttler interface {
+	ThrottleAllocation(interface{}) error
+	ThrottleEnterEvaluation(interface{}) error
+	ThrottleExitEvaluation(interface{})
+}
+
 type Runtime struct {
-	M       *M
-	Globals map[string]interface{}
-	Scope   *scope.S
-	Debug   bool
+	M         *M
+	Globals   map[string]interface{}
+	Scope     *scope.S
+	Throttler Throttler
+	Debug     bool
+}
+
+func (r *Runtime) ThrottleAllocation(i interface{}) error {
+	if r.Throttler == nil {
+		return nil
+	}
+	return r.Throttler.ThrottleAllocation(i)
+}
+
+func (r *Runtime) ThrottleEnterEvaluation(i interface{}) error {
+	if r.Throttler == nil {
+		return nil
+	}
+	return r.Throttler.ThrottleEnterEvaluation(i)
+}
+
+func (r *Runtime) ThrottleExitEvaluation(i interface{}) {
+	if r.Throttler != nil {
+		r.Throttler.ThrottleExitEvaluation(i)
+	}
 }
 
 func (m *M) NewRuntime() *Runtime {
@@ -267,9 +294,10 @@ func (e *Evaluator) Eval(i interface{}) (interface{}, error) {
 	if e.Runtime.Debug || e.Runtime.M.Debug {
 		fmt.Printf("Eval(%#v)\n", i)
 	}
-	if err := e.ThrottleEvaluation(i); err != nil {
+	if err := e.Runtime.ThrottleEnterEvaluation(i); err != nil {
 		return nil, err
 	}
+	defer e.Runtime.ThrottleExitEvaluation(i)
 	if i == nil {
 		return nil, nil
 	}
@@ -1082,14 +1110,6 @@ func (e *Evaluator) EvalVar(v *js.Var) (interface{}, error) {
 	return e.Runtime.Lookup(string(v.Data))
 }
 
-func (e *Evaluator) ThrottleEvaluation(i interface{}) error {
-	return nil
-}
-
-func (e *Evaluator) ThrottleAllocation(i interface{}) error {
-	return nil
-}
-
 func (e *Evaluator) EvalBindingElement(el js.BindingElement, value interface{}, constant bool) (interface{}, error) {
 	if value == nil {
 		var err error
@@ -1098,7 +1118,7 @@ func (e *Evaluator) EvalBindingElement(el js.BindingElement, value interface{}, 
 			return nil, err
 		}
 	}
-	if err := e.ThrottleAllocation(value); err != nil {
+	if err := e.Runtime.ThrottleAllocation(value); err != nil {
 		return nil, err
 	}
 	switch bind := el.Binding.(type) {
